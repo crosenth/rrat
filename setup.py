@@ -12,9 +12,8 @@ setuptools.setup(author='Chris Rosenthal',
                  py_modules=['rrat'],
                  entry_points={
                      'console_scripts': {'rrat = rrat:main'}},
-                 version=0.2,
+                 version=0.3,
                  url='https://github.com/crosenth/rrat',
-                 package_data={'classifier': ['data/*']},
                  license='GPLv3',
                  classifiers=[
                      'License :: OSI Approved :: '

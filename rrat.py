@@ -248,9 +248,9 @@ def setup_logging(namespace):
         3: logging.DEBUG,
     }.get(namespace.verbosity, logging.DEBUG)
     if namespace.verbosity > 1:
-        logformat = '%(levelname)s classifier %(message)s'
+        logformat = '%(levelname)s rrat %(message)s'
     else:
-        logformat = 'classifier %(message)s'
+        logformat = 'rrat %(message)s'
     logging.basicConfig(stream=namespace.log, format=logformat, level=loglevel)
 
 
