@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Calculates median copy number correction using the University
-of Michigan rrndb database.  Median copy numbers
+Calculates median copy number corrections for taxonomic nodes
+using the University of Michigan rrndb database.  Median copy numbers
 are calculated from the lowest rank to `root`.  Empty nodes
 inherit their immediate parent's median copy number.
 
-https://rrndb.umms.med.umich.edu/static/download/
+rrndb - https://rrndb.umms.med.umich.edu/static/download/
+ncbi - ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz
 """
 import argparse
 import csv
@@ -22,6 +23,7 @@ import zipfile
 RRNDB = 'https://rrndb.umms.med.umich.edu/static/download/rrnDB-5.4.tsv.zip'
 NCBI = 'ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz'
 
+# taxonomic rank order - https://en.wikipedia.org/wiki/Taxonomic_rank
 RANK_ORDER = [
     'forma',
     'varietas',
@@ -62,13 +64,14 @@ def add_arguments(parser):
         nargs='?',
         metavar='tsv',
         help='copy number data with columns '
-             '"NCBI tax id,16S gene count"[download from rrndb]')
+             '"NCBI tax id,16S gene count" [download from rrndb]')
 
     parser.add_argument(
         '-V', '--version',
         action='version',
         version=pkg_resources.get_distribution('rrat').version,
         help='Print the version number and exit.')
+
     log_parser = parser.add_argument_group(title='logging options')
     log_parser.add_argument(
         '-l', '--log',
@@ -93,12 +96,12 @@ def add_arguments(parser):
     parser.add_argument(
         '--nodes',
         type=argparse.FileType('r'),
-        help='location of csv nodes file with columns'
+        help='location of header-less csv nodes file with columns '
              'tax_id,parent_id,rank [download from ncbi]')
     parser.add_argument(
         '--merged',
         type=argparse.FileType('r'),
-        help='location of csv merged file with columns'
+        help='location of header-less csv merged file with columns '
              'old_tax_id,tax_id [download from ncbi]')
     parser.add_argument(
         '--out',
@@ -139,9 +142,12 @@ def main(args=sys.argv[1:]):
         nodes = io.TextIOWrapper(taxdmp.extractfile('nodes.dmp'))
         nodes = (n.strip().replace('\t', '').split('|') for n in nodes)
 
-    # designate None and 'root' as our traversing stop values in the tax tree
+    # 0 tax_id, 1 parent, 2 rank
     nodes = (n[:3] for n in nodes)
+
+    # designate None and 'root' as our traversing stop values in the tax tree
     nodes = [['1', None, 'root'] if n[0] == '1' else n for n in nodes]
+
     parents = {n[0]: n[1] for n in nodes}
     ranks = {n[0]: n[2] for n in nodes}
 
@@ -171,8 +177,10 @@ def main(args=sys.argv[1:]):
 
     '''
     Occasionally, circular lineages can exist in ncbi lineages.  To account
-    for this any child node with same rank as parent is set to no_rank and
-    expanded later.
+    for some of this any child node with same rank as parent is set to
+    no_rank and expanded later.
+
+    O(n)
     '''
     new_nodes = []
     for i, pi, rank in nodes:
@@ -183,8 +191,12 @@ def main(args=sys.argv[1:]):
         new_nodes.append((i, pi, rank))
     nodes = new_nodes
 
-    logging.info('crawling no rank lineages')
-    # create mini lineages for expanding no_rank nodes
+    logging.info('expanding "no rank" lineages in two passes')
+    '''
+    Pass 1) add "no rank" nodes and parents until a ranked parent is found
+
+    O(n)
+    '''
     lineages = []
     no_ranks = [n for n in nodes if n[2] == 'no rank']
     for i, _, rank in no_ranks:
@@ -195,8 +207,11 @@ def main(args=sys.argv[1:]):
         lineages.append(i)
 
     '''
-    We will utilize the available rank data to help order the nodes.
-    `no_rank`  will need to be expanded and inserted into the rank_order.
+    Pass 2)
+    Reverse lineages list and walk back expanding "no rank" nodes.
+    Insert expanded ranks into rank_order
+
+    O(n)
     '''
     rank_order = RANK_ORDER
     logging.info('expanding no ranks')
@@ -213,11 +228,23 @@ def main(args=sys.argv[1:]):
     logging.info('calculating medians')
     copy_nums = {}
 
+    """
+    Using given copy numbers, group by tax_id
+    and calculate initial median values
+
+    O(n)
+    """
     rrndb = sorted(rrndb, key=lambda x: x[0])  # key = tax_id
-    for i, grp in itertools.groupby(rrndb, lambda x: x[0]):
+    for i, grp in itertools.groupby(rrndb, lambda x: x[0]):  # by tax_id
         copy_nums[i] = statistics.median(g[1] for g in grp)
 
-    # Calculate copy_nums starting from the bottom (forma) working up to root
+    """
+    For each rank starting from the lowest (forma), select tax nodes
+    that have copy number data and calculate median values.  Last node
+    will be root with parent of None.
+
+    O(n)
+    """
     for r in rank_order:
         tax_ids = [i for i in copy_nums if ranks[i] == r]
         tax_ids = sorted(tax_ids, key=lambda x: parents[x])
@@ -225,13 +252,23 @@ def main(args=sys.argv[1:]):
             if k is not None:  # last node is root with a parent of None
                 copy_nums[k] = statistics.median(copy_nums[i] for i in g)
 
-    # Starting from root, traverse down.  Empty nodes will inherit parent value
+    """
+    For each tax_id with out a copy_num value, sort by rank starting with root
+    and iterate back down the tree inheriting parent copy_num value.
+
+    O(n)
+    """
     tax_ids = [i for i, _, _ in nodes if i not in copy_nums]
     rank_order = list(reversed(rank_order))  # make root rank first
     tax_ids = sorted(tax_ids, key=lambda x: rank_order.index(ranks[x]))
     for i in tax_ids:
         copy_nums[i] = copy_nums[parents[i]]
 
+    """
+    sort values - https://docs.python.org/2/howto/sorting.html
+
+    O(nlogn)
+    """
     def by_rank(row):
         return rank_order.index(ranks[row[0]])
     rows = sorted(copy_nums.items(), key=by_rank)
