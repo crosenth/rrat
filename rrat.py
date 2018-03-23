@@ -167,7 +167,10 @@ def main(args=sys.argv[1:]):
                     med = c.post_order()
                     if med is not None:
                         medians.append(med)
-                self.median = statistics.median(medians)
+                if medians:
+                    self.median = statistics.median(medians)
+                else:
+                    self.median = None
             return self.median
 
         def pre_order(self):
@@ -176,23 +179,31 @@ def main(args=sys.argv[1:]):
                     c.set_median(self.median)
                 c.pre_order()
 
+        def __str__(self):
+            return '{} --> {}'.format(self.tax_id, self.median)
+
+        def __repr__(self):
+            return '{} --> {}'.format(self.tax_id, self.median)
+
     node_objs = {}
 
     logging.info('building node tree')
     for tax_id, parent_id in nodes:
         node = Node(tax_id, rrndb_medians.get(tax_id, None))
         node_objs[tax_id] = node
-        if parent_id in node_objs:
-            parent = node_objs[parent_id]
-        else:
-            parent = Node(parent_id, rrndb_medians.get(tax_id, None))
-            node_objs[parent_id] = parent
-        parent.add_child(node)
-        node.set_parent(parent)
+        if tax_id != '1':  # root has no parent
+            if parent_id in node_objs:
+                parent = node_objs[parent_id]
+            else:
+                parent = Node(parent_id, rrndb_medians.get(tax_id, None))
+                node_objs[parent_id] = parent
+            parent.add_child(node)
+            node.set_parent(parent)
+
+    print(node_objs['433'].post_order())
+    return
 
     root = node_objs['1']
-    print(root.children)
-    return
     logging.info('executing postorder traversal')
     median = root.post_order()
     print(median)
