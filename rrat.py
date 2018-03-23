@@ -23,40 +23,6 @@ import zipfile
 RRNDB = 'https://rrndb.umms.med.umich.edu/static/download/rrnDB-5.4.tsv.zip'
 NCBI = 'ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz'
 
-# taxonomic rank order - https://en.wikipedia.org/wiki/Taxonomic_rank
-RANK_ORDER = [
-    'forma',
-    'varietas',
-    'subspecies',
-    'species',
-    'species subgroup',
-    'species group',
-    'subgenus',
-    'genus',
-    'subtribe',
-    'tribe',
-    'subfamily',
-    'family',
-    'superfamily',
-    'parvorder',
-    'infraorder',
-    'suborder',
-    'order',
-    'superorder',
-    'cohort',
-    'infraclass',
-    'subclass',
-    'class',
-    'superclass',
-    'subphylum',
-    'phylum',
-    'superphylum',
-    'subkingdom',
-    'kingdom',
-    'superkingdom',
-    'root',
-]
-
 
 def add_arguments(parser):
     parser.add_argument(
@@ -143,13 +109,7 @@ def main(args=sys.argv[1:]):
         nodes = (n.strip().replace('\t', '').split('|') for n in nodes)
 
     # 0 tax_id, 1 parent, 2 rank
-    nodes = (n[:3] for n in nodes)
-
-    # designate None and 'root' as our traversing stop values in the tax tree
-    nodes = [['1', None, 'root'] if n[0] == '1' else n for n in nodes]
-
-    parents = {n[0]: n[1] for n in nodes}
-    ranks = {n[0]: n[2] for n in nodes}
+    nodes = (n[:2] for n in nodes)
 
     if args.merged:
         merged = csv.reader(args.merged)
@@ -174,107 +134,68 @@ def main(args=sys.argv[1:]):
     rrndb = ([row[tax_id], float(row[count])] for row in rrndb if row[count])
     logging.info('updating merged tax_ids')
     rrndb = ([merged.get(t, t), c] for t, c in rrndb)
-
-    '''
-    Occasionally, circular lineages can exist in ncbi lineages.  To account
-    for some of this any child node with same rank as parent is set to
-    no_rank and expanded later.
-
-    O(n)
-    '''
-    new_nodes = []
-    for i, pi, rank in nodes:
-        if rank != 'no rank' and rank != 'root' and ranks[pi] == rank:
-            logging.warning(i + ' has same rank as parent')
-            rank = 'no rank'
-            ranks[i] = rank
-        new_nodes.append((i, pi, rank))
-    nodes = new_nodes
-
-    logging.info('expanding "no rank" lineages in two passes')
-    '''
-    Pass 1) add "no rank" nodes and parents until a ranked parent is found
-
-    O(n)
-    '''
-    lineages = []
-    no_ranks = [n for n in nodes if n[2] == 'no rank']
-    for i, _, rank in no_ranks:
-        while rank == 'no rank':
-            lineages.append(i)
-            i = parents[i]
-            rank = ranks[i]
-        lineages.append(i)
-
-    '''
-    Pass 2)
-    Reverse lineages list and walk back expanding "no rank" nodes.
-    Insert expanded ranks into rank_order
-
-    O(n)
-    '''
-    rank_order = RANK_ORDER
-    logging.info('expanding no ranks')
-    prev_rank = ranks[lineages.pop()]  # start with last node which is ranked
-    for i in reversed(lineages):
-        rank = ranks[i]
-        if rank == 'no rank':
-            rank = prev_rank + '_'
-            if rank not in rank_order:
-                rank_order.insert(rank_order.index(prev_rank), rank)
-            ranks[i] = rank
-        prev_rank = rank
-
-    logging.info('calculating medians')
-    copy_nums = {}
-
-    """
-    Using given copy numbers, group by tax_id
-    and calculate initial median values
-
-    O(n)
-    """
     rrndb = sorted(rrndb, key=lambda x: x[0])  # key = tax_id
+
+    rrndb_medians = {}
     for i, grp in itertools.groupby(rrndb, lambda x: x[0]):  # by tax_id
-        copy_nums[i] = statistics.median(g[1] for g in grp)
+        rrndb_medians[i] = statistics.median(g[1] for g in grp)
 
-    """
-    For each rank starting from the lowest (forma), select tax nodes
-    that have copy number data and calculate median values.  Last node
-    will be root with parent of None.
+    class Node:
+        def __init__(self, tax_id, rrndb):
+            self.tax_id = tax_id
+            self.children = []
+            self.median = rrndb
 
-    O(n)
-    """
-    for r in rank_order:
-        tax_ids = [i for i in copy_nums if ranks[i] == r]
-        tax_ids = sorted(tax_ids, key=lambda x: parents[x])
-        for k, g in itertools.groupby(tax_ids, key=lambda x: parents[x]):
-            if k is not None:  # last node is root with a parent of None
-                copy_nums[k] = statistics.median(copy_nums[i] for i in g)
+        def add_child(self, child):
+            self.children.append(child)
 
-    """
-    For each tax_id with out a copy_num value, sort by rank starting with root
-    and iterate back down the tree inheriting parent copy_num value.
+        def set_parent(self, parent):
+            self.parent = parent
 
-    O(n)
-    """
-    tax_ids = [i for i, _, _ in nodes if i not in copy_nums]
-    rank_order = list(reversed(rank_order))  # make root rank first
-    tax_ids = sorted(tax_ids, key=lambda x: rank_order.index(ranks[x]))
-    for i in tax_ids:
-        copy_nums[i] = copy_nums[parents[i]]
+        def set_median(self, median):
+            if self.median is None:
+                self.median = median
+            else:
+                raise ValueError(
+                    'Node {tax_id} already contains '
+                    'a median copy number {median}'.format(self))
 
-    """
-    sort values - https://docs.python.org/2/howto/sorting.html
+        def post_order(self):
+            if self.median is None:
+                medians = []
+                for c in self.children:
+                    med = c.post_order()
+                    if med is not None:
+                        medians.append(med)
+                self.median = statistics.median(medians)
+            return self.median
 
-    O(nlogn)
-    """
-    def by_rank(row):
-        return rank_order.index(ranks[row[0]])
-    rows = sorted(copy_nums.items(), key=by_rank)
-    writer = csv.writer(args.out)
-    writer.writerow(['tax_id', 'median'])
-    writer.writerows(rows)
+        def pre_order(self):
+            for c in self.children:
+                if c.median is None:
+                    c.set_median(self.median)
+                c.pre_order()
+
+    node_objs = {}
+
+    logging.info('building node tree')
+    for tax_id, parent_id in nodes:
+        node = Node(tax_id, rrndb_medians.get(tax_id, None))
+        node_objs[tax_id] = node
+        if parent_id in node_objs:
+            parent = node_objs[parent_id]
+        else:
+            parent = Node(parent_id, rrndb_medians.get(tax_id, None))
+            node_objs[parent_id] = parent
+        parent.add_child(node)
+        node.set_parent(parent)
+
+    root = node_objs['1']
+    print(root.children)
+    return
+    logging.info('executing postorder traversal')
+    median = root.post_order()
+    print(median)
 
 
 def setup_logging(namespace):
