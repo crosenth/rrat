@@ -11,8 +11,8 @@ ncbi - ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz
 import argparse
 import csv
 import io
-import itertools
 import logging
+import os
 import pkg_resources
 import urllib.request
 import statistics
@@ -24,11 +24,53 @@ RRNDB = 'https://rrndb.umms.med.umich.edu/static/download/rrnDB-5.4.tsv.zip'
 NCBI = 'ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz'
 
 
+class Node:
+    def __init__(self, tax_id, rrndb):
+        self.tax_id = tax_id
+        if rrndb:
+            self.median = statistics.median(rrndb)
+        else:
+            self.median = None
+        self.children = []
+
+    def __repr__(self):
+        return '{} (parent: {})--> {}'.format(
+            self.tax_id, self.parent.tax_id, self.median)
+
+    def add_child(self, child):
+        self.children.append(child)
+
+    def post_order(self):
+        if self.median is None:
+            medians = []
+            for c in self.children:
+                med = c.post_order()
+                if med is not None:
+                    medians.append(med)
+            if medians:
+                self.median = statistics.median(medians)
+        return self.median
+
+    def pre_order(self):
+        for c in self.children:
+            if c.median is None:
+                c.median = self.median
+            c.pre_order()
+
+    def set_parent(self, parent):
+        self.parent = parent
+
+    def write_tree(self, file_obj):
+        file_obj.write('{},{}\n'.format(self.tax_id, self.median))
+        for c in self.children:
+            c.write_tree(file_obj)
+
+
 def add_arguments(parser):
     parser.add_argument(
         'rrndb',
         nargs='?',
-        metavar='tsv',
+        metavar='zip',
         help='copy number data with columns '
              '"NCBI tax id,16S gene count" [download from rrndb]')
 
@@ -98,7 +140,7 @@ def main(args=sys.argv[1:]):
 
     if not (args.nodes and args.merged):
         logging.info('downloading ' + NCBI)
-        tar, headers = urllib.request.urlretrieve(NCBI, 'taxdump.tar.gz')
+        tar, headers = urllib.request.urlretrieve(NCBI, os.path.basename(NCBI))
         logging.debug(str(headers).strip())
         taxdmp = tarfile.open(name=tar, mode='r:gz')
 
@@ -108,7 +150,7 @@ def main(args=sys.argv[1:]):
         nodes = io.TextIOWrapper(taxdmp.extractfile('nodes.dmp'))
         nodes = (n.strip().replace('\t', '').split('|') for n in nodes)
 
-    # 0 tax_id, 1 parent, 2 rank
+    # tax_id, parent
     nodes = (n[:2] for n in nodes)
 
     if args.merged:
@@ -119,94 +161,60 @@ def main(args=sys.argv[1:]):
     merged = dict(m[:2] for m in merged)
 
     if args.rrndb:
-        rrndb = (row for row in csv.reader(open(args.rrndb)))
+        zp = args.rrndb
     else:
         logging.info('downloading ' + RRNDB)
-        zp, headers = urllib.request.urlretrieve(RRNDB, 'rrnDB-5.4.tsv.zip')
+        zp, headers = urllib.request.urlretrieve(
+            RRNDB, os.path.basename(RRNDB))
         logging.debug(str(headers).strip())
-        rrndb = io.TextIOWrapper(zipfile.ZipFile(zp).open('rrnDB-5.4.tsv'))
-        rrndb = (r.strip().split('\t') for r in rrndb)
-        rrndb = fix_rows(rrndb)  # remove random newlines in rows
-
+    tsv = os.path.splitext(str(zp))[0]
+    rrndb = io.TextIOWrapper(zipfile.ZipFile(zp).open(tsv))
+    rrndb = (r.strip().split('\t') for r in rrndb)
+    rrndb = fix_rows(rrndb)  # remove random newlines in rows
     header = next(rrndb)
     tax_id = header.index('NCBI tax id')
     count = header.index('16S gene count')
     rrndb = ([row[tax_id], float(row[count])] for row in rrndb if row[count])
     logging.info('updating merged tax_ids')
     rrndb = ([merged.get(t, t), c] for t, c in rrndb)
-    rrndb = sorted(rrndb, key=lambda x: x[0])  # key = tax_id
 
-    rrndb_medians = {}
-    for i, grp in itertools.groupby(rrndb, lambda x: x[0]):  # by tax_id
-        rrndb_medians[i] = statistics.median(g[1] for g in grp)
-
-    class Node:
-        def __init__(self, tax_id, rrndb):
-            self.tax_id = tax_id
-            self.children = []
-            self.median = rrndb
-
-        def add_child(self, child):
-            self.children.append(child)
-
-        def set_parent(self, parent):
-            self.parent = parent
-
-        def set_median(self, median):
-            if self.median is None:
-                self.median = median
-            else:
-                raise ValueError(
-                    'Node {tax_id} already contains '
-                    'a median copy number {median}'.format(self))
-
-        def post_order(self):
-            if self.median is None:
-                medians = []
-                for c in self.children:
-                    med = c.post_order()
-                    if med is not None:
-                        medians.append(med)
-                if medians:
-                    self.median = statistics.median(medians)
-                else:
-                    self.median = None
-            return self.median
-
-        def pre_order(self):
-            for c in self.children:
-                if c.median is None:
-                    c.set_median(self.median)
-                c.pre_order()
-
-        def __str__(self):
-            return '{} --> {}'.format(self.tax_id, self.median)
-
-        def __repr__(self):
-            return '{} --> {}'.format(self.tax_id, self.median)
-
-    node_objs = {}
+    # group copy numbers by tax_id
+    medians = {}
+    for i, n in rrndb:
+        if i in medians:
+            medians[i].append(n)
+        else:
+            medians[i] = [n]
 
     logging.info('building node tree')
+    tree = {}
     for tax_id, parent_id in nodes:
-        node = Node(tax_id, rrndb_medians.get(tax_id, None))
-        node_objs[tax_id] = node
-        if tax_id != '1':  # root has no parent
-            if parent_id in node_objs:
-                parent = node_objs[parent_id]
-            else:
-                parent = Node(parent_id, rrndb_medians.get(tax_id, None))
-                node_objs[parent_id] = parent
-            parent.add_child(node)
-            node.set_parent(parent)
+        if tax_id in tree:
+            node = tree[tax_id]
+        else:
+            node = Node(tax_id, medians.get(tax_id, None))
+            tree[tax_id] = node
 
-    print(node_objs['433'].post_order())
-    return
+        if tax_id == '1':  # root has no parent
+            continue
 
-    root = node_objs['1']
-    logging.info('executing postorder traversal')
-    median = root.post_order()
-    print(median)
+        if parent_id in tree:
+            parent = tree[parent_id]
+        else:
+            parent = Node(parent_id, medians.get(tax_id, None))
+            tree[parent_id] = parent
+
+        parent.add_child(node)
+        node.set_parent(parent)
+
+    root = tree['1']
+    logging.info('calculating medians by post order traversal')
+    root.post_order()
+    logging.info('assigning empty nodes by pre order traversal')
+    root.pre_order()
+    logging.info('writing to file')
+    args.out.write('tax_id,median\n')
+    root.write_tree(args.out)
 
 
 def setup_logging(namespace):
