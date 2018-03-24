@@ -2,8 +2,9 @@
 """
 Calculates median copy number corrections for taxonomic nodes
 using the University of Michigan rrndb database.  Median copy numbers
-are calculated from the lowest rank to `root`.  Empty nodes
-inherit their immediate parent's median copy number.
+are calculated using a post-order traversal to calculate median values
+followed by a pre-order traversal to fill in missing nodes by inheritence
+from the parent node.
 
 rrndb - https://rrndb.umms.med.umich.edu/static/download/
 ncbi - ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/taxdump.tar.gz
@@ -34,24 +35,31 @@ class Node:
         self.children = []
 
     def __repr__(self):
-        return '{} (parent: {})--> {}'.format(
+        return '{} (parent: {}) --> {}'.format(
             self.tax_id, self.parent.tax_id, self.median)
 
     def add_child(self, child):
         self.children.append(child)
 
     def post_order(self):
+        '''
+        traverse through the all children (subtrees) before calculating
+        the median copy number value
+        '''
         if self.median is None:
-            medians = []
+            child_medians = []
             for c in self.children:
                 med = c.post_order()
                 if med is not None:
-                    medians.append(med)
-            if medians:
-                self.median = statistics.median(medians)
+                    child_medians.append(med)
+            if child_medians:
+                self.median = statistics.median(child_medians)
         return self.median
 
     def pre_order(self):
+        '''
+        Fill in any missing subtree medians with the parent median value
+        '''
         for c in self.children:
             if c.median is None:
                 c.median = self.median
@@ -102,22 +110,53 @@ def add_arguments(parser):
         help='Suppress output')
 
     parser.add_argument(
+        '--root',
+        default='1',
+        metavar='',
+        help='root node id [%(default)s]')
+    parser.add_argument(
         '--nodes',
+        metavar='',
         type=argparse.FileType('r'),
         help='location of header-less csv nodes file with columns '
              'tax_id,parent_id,rank [download from ncbi]')
     parser.add_argument(
         '--merged',
+        metavar='',
         type=argparse.FileType('r'),
         help='location of header-less csv merged file with columns '
              'old_tax_id,tax_id [download from ncbi]')
     parser.add_argument(
         '--out',
+        metavar='',
         default=sys.stdout,
         type=argparse.FileType('w'),
         help='output 16s rrndb with taxids and counts')
 
     return parser
+
+
+def build_tree(nodes, medians, root):
+    tree = {}
+    for tax_id, parent_id in nodes:
+        if tax_id in tree:
+            node = tree[tax_id]
+        else:
+            node = Node(tax_id, medians.get(tax_id, None))
+            tree[tax_id] = node
+
+        if tax_id == root:  # root has no parent
+            continue
+
+        if parent_id in tree:
+            parent = tree[parent_id]
+        else:
+            parent = Node(parent_id, medians.get(tax_id, None))
+            tree[parent_id] = parent
+
+        parent.add_child(node)
+        node.set_parent(parent)
+    return tree[root]
 
 
 def fix_rows(rows):
@@ -150,7 +189,7 @@ def main(args=sys.argv[1:]):
         nodes = io.TextIOWrapper(taxdmp.extractfile('nodes.dmp'))
         nodes = (n.strip().replace('\t', '').split('|') for n in nodes)
 
-    # tax_id, parent
+    # tax_id,parent
     nodes = (n[:2] for n in nodes)
 
     if args.merged:
@@ -179,35 +218,15 @@ def main(args=sys.argv[1:]):
     rrndb = ([merged.get(t, t), c] for t, c in rrndb)
 
     # group copy numbers by tax_id
-    medians = {}
+    copy_nums = {}
     for i, n in rrndb:
-        if i in medians:
-            medians[i].append(n)
+        if i in copy_nums:
+            copy_nums[i].append(n)
         else:
-            medians[i] = [n]
+            copy_nums[i] = [n]
 
     logging.info('building node tree')
-    tree = {}
-    for tax_id, parent_id in nodes:
-        if tax_id in tree:
-            node = tree[tax_id]
-        else:
-            node = Node(tax_id, medians.get(tax_id, None))
-            tree[tax_id] = node
-
-        if tax_id == '1':  # root has no parent
-            continue
-
-        if parent_id in tree:
-            parent = tree[parent_id]
-        else:
-            parent = Node(parent_id, medians.get(tax_id, None))
-            tree[parent_id] = parent
-
-        parent.add_child(node)
-        node.set_parent(parent)
-
-    root = tree['1']
+    root = build_tree(nodes, copy_nums, args.root)
     logging.info('calculating medians by post order traversal')
     root.post_order()
     logging.info('assigning empty nodes by pre order traversal')
