@@ -30,13 +30,13 @@ class Node:
         self.tax_id = tax_id
         if rrndb:
             self.median = statistics.median(rrndb)
+            self.how = 'R'
         else:
             self.median = None
         self.children = []
 
     def __repr__(self):
-        return '{} (parent: {}) --> {}'.format(
-            self.tax_id, self.parent.tax_id, self.median)
+        return '{} --> {} ({})'.format(self.tax_id, self.median, self.how)
 
     def add_child(self, child):
         self.children.append(child)
@@ -54,19 +54,19 @@ class Node:
                     child_medians.append(med)
             if child_medians:
                 self.median = statistics.median(child_medians)
+                self.how = 'M'
         return self.median
 
-    def pre_order(self):
+    def pre_order(self, print_char='|_____'):
         '''
         Fill in any missing subtree medians with the parent median value
         '''
+        logging.debug(print_char + str(self))
         for c in self.children:
             if c.median is None:
                 c.median = self.median
-            c.pre_order()
-
-    def set_parent(self, parent):
-        self.parent = parent
+                c.how = 'I'
+            c.pre_order('|  ' + print_char)
 
     def write_tree(self, file_obj):
         file_obj.write('{},{}\n'.format(self.tax_id, self.median))
@@ -155,7 +155,6 @@ def build_tree(nodes, medians, root):
             tree[parent_id] = parent
 
         parent.add_child(node)
-        node.set_parent(parent)
     return tree[root]
 
 
@@ -227,9 +226,9 @@ def main(args=sys.argv[1:]):
 
     logging.info('building node tree')
     root = build_tree(nodes, copy_nums, args.root)
-    logging.info('calculating medians by post order traversal')
+    logging.info('calculating medians by post-order traversal')
     root.post_order()
-    logging.info('assigning empty nodes by pre order traversal')
+    logging.info('assigning empty nodes by pre-order traversal')
     root.pre_order()
     logging.info('writing to file')
     args.out.write('tax_id,median\n')
