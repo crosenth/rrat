@@ -221,7 +221,7 @@ def main(args=sys.argv[1:]):
         zp, headers = urllib.request.urlretrieve(
             args.rrndb, os.path.basename(args.rrndb))
         logging.debug(str(headers).strip())
-    tsv = os.path.splitext(str(zp))[0]
+    tsv = os.path.basename(os.path.splitext(str(zp))[0])
     rrndb = io.TextIOWrapper(zipfile.ZipFile(zp).open(tsv))
     rrndb = (r.strip().split('\t') for r in rrndb)
     rrndb = fix_rows(rrndb)  # remove random newlines in rows
