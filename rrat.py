@@ -36,6 +36,11 @@ class Node:
         self.children = []
 
     def __repr__(self):
+        '''
+        prints the tax_id, median and how the number was calculated:
+
+        R = rrndb, M = median, I = inherited
+        '''
         return '{} --> {} ({})'.format(self.tax_id, self.median, self.how)
 
     def add_child(self, child):
@@ -76,17 +81,44 @@ class Node:
 
 def add_arguments(parser):
     parser.add_argument(
-        'rrndb',
+        'copy_nums',
         nargs='?',
         metavar='zip',
         help='copy number data with columns '
-             '"NCBI tax id,16S gene count" [download from rrndb]')
+             '"NCBI tax id,16S gene count"')
 
+    parser.add_argument(
+        '--root',
+        default='1',
+        metavar='',
+        help='root node id [%(default)s]')
+    parser.add_argument(
+        '--nodes',
+        metavar='',
+        type=argparse.FileType('r'),
+        help='location of header-less csv nodes file with columns '
+             'tax_id,parent_id,rank [download from ncbi]')
+    parser.add_argument(
+        '--merged',
+        metavar='',
+        type=argparse.FileType('r'),
+        help='location of header-less csv merged file with columns '
+             'old_tax_id,tax_id [download from ncbi]')
     parser.add_argument(
         '-V', '--version',
         action='version',
         version=pkg_resources.get_distribution('rrat').version,
         help='Print the version number and exit.')
+
+    url_parser = parser.add_argument_group(title='urls')
+    url_parser.add_argument(
+        '--rrndb',
+        default=RRNDB,
+        help='[%(default)s]')
+    url_parser.add_argument(
+        '--ncbi',
+        default=NCBI,
+        help='[%(default)s]')
 
     log_parser = parser.add_argument_group(title='logging options')
     log_parser.add_argument(
@@ -109,23 +141,6 @@ def add_arguments(parser):
         const=0,
         help='Suppress output')
 
-    parser.add_argument(
-        '--root',
-        default='1',
-        metavar='',
-        help='root node id [%(default)s]')
-    parser.add_argument(
-        '--nodes',
-        metavar='',
-        type=argparse.FileType('r'),
-        help='location of header-less csv nodes file with columns '
-             'tax_id,parent_id,rank [download from ncbi]')
-    parser.add_argument(
-        '--merged',
-        metavar='',
-        type=argparse.FileType('r'),
-        help='location of header-less csv merged file with columns '
-             'old_tax_id,tax_id [download from ncbi]')
     parser.add_argument(
         '--out',
         metavar='',
@@ -177,8 +192,9 @@ def main(args=sys.argv[1:]):
     setup_logging(args)
 
     if not (args.nodes and args.merged):
-        logging.info('downloading ' + NCBI)
-        tar, headers = urllib.request.urlretrieve(NCBI, os.path.basename(NCBI))
+        logging.info('downloading ' + args.ncbi)
+        tar, headers = urllib.request.urlretrieve(
+           args.ncbi, os.path.basename(args.ncbi))
         logging.debug(str(headers).strip())
         taxdmp = tarfile.open(name=tar, mode='r:gz')
 
@@ -198,12 +214,12 @@ def main(args=sys.argv[1:]):
         merged = (m.strip().replace('\t', '').split('|') for m in merged)
     merged = dict(m[:2] for m in merged)
 
-    if args.rrndb:
-        zp = args.rrndb
+    if args.copy_nums:
+        zp = args.copy_nums
     else:
-        logging.info('downloading ' + RRNDB)
+        logging.info('downloading ' + args.rrndb)
         zp, headers = urllib.request.urlretrieve(
-            RRNDB, os.path.basename(RRNDB))
+            args.rrndb, os.path.basename(args.rrndb))
         logging.debug(str(headers).strip())
     tsv = os.path.splitext(str(zp))[0]
     rrndb = io.TextIOWrapper(zipfile.ZipFile(zp).open(tsv))
