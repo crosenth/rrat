@@ -60,9 +60,12 @@ class Node:
             if child_medians:
                 self.median = statistics.median(child_medians)
                 self.how = 'M'
+        else:  # make sure we recurse and calculate the children correctly
+            for c in self.children:
+                c.post_order()
         return self.median
 
-    def pre_order(self, print_char='|_____'):
+    def pre_order(self, print_char='|--- '):
         '''
         Fill in any missing subtree medians with the parent median value
         '''
@@ -71,7 +74,7 @@ class Node:
             if c.median is None:
                 c.median = self.median
                 c.how = 'I'
-            c.pre_order('|  ' + print_char)
+            c.pre_order('|    ' + print_char)
 
     def write_tree(self, file_obj):
         file_obj.write('{},{}\n'.format(self.tax_id, self.median))
