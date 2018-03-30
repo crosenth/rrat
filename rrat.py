@@ -60,7 +60,7 @@ class Node:
             if child_medians:
                 self.median = statistics.median(child_medians)
                 self.how = 'M'
-        else:  # make sure we recurse and calculate the children correctly
+        else:  # make sure we take care of the children correctly
             for c in self.children:
                 c.post_order()
         return self.median
